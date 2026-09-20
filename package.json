@@ -1,0 +1,25 @@
+{
+  "name": "frani-signet",
+  "version": "1.0.0",
+  "description": "Signed proof-of-existence receipts on Unicity testnet2. Made by CRYPTFRANI.",
+  "type": "module",
+  "bin": {
+    "signet": "bin/signet.js"
+  },
+  "scripts": {
+    "start": "node bin/signet.js daemon",
+    "stamp": "node bin/signet.js stamp",
+    "verify": "node bin/signet.js verify",
+    "about": "node bin/signet.js about",
+    "help": "node bin/signet.js help",
+    "test": "node test/receipt.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@unicitylabs/sphere-sdk": "0.18.0-dev.1",
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=Frani Signet — signed proof-of-existence on Unicity testnet2
+Documentation=https://github.com/NSEVEjk0/frani-signet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and WorkingDirectory to your deployment.
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/frani-signet
+EnvironmentFile=-/home/ubuntu/projects/frani-signet/.env
+ExecStart=/usr/bin/node bin/signet.js daemon
+Restart=on-failure
+RestartSec=5
+# The wallet lives under WorkingDirectory/wallet-data — keep it private.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# secrets and environment
+.env
+.env.*
+!.env.example
+
+# wallet + issued data (holds keys and receipts — never commit)
+wallet-data/
+receipts/
+
+# logs
+*.log
+logs/
+
+# os / editor
+.DS_Store
+*.swp
