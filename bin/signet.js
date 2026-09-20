@@ -12,7 +12,7 @@ import { handleMessage, HELP, aboutText } from '../src/service.js';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
-function toBaseUnits(whole, decimals = 8) {
+function toBaseUnits(whole, decimals = 18) {
   // whole UCT -> smallest-unit decimal string, no floating point drift.
   const [i, f = ''] = String(whole).split('.');
   const frac = (f + '0'.repeat(decimals)).slice(0, decimals);
