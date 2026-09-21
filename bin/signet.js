@@ -8,6 +8,7 @@ import { config } from '../src/config.js';
 import { openWallet, closeWallet, uctCoinId } from '../src/wallet.js';
 import { createReceipt, verifyReceipt } from '../src/receipt.js';
 import { ReceiptStore } from '../src/store.js';
+import { refundOnce } from '../src/refund.js';
 import { handleMessage, HELP, aboutText } from '../src/service.js';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -17,6 +18,14 @@ function toBaseUnits(whole, decimals = 18) {
   const [i, f = ''] = String(whole).split('.');
   const frac = (f + '0'.repeat(decimals)).slice(0, decimals);
   return (BigInt(i || '0') * 10n ** BigInt(decimals) + BigInt(frac || '0')).toString();
+}
+
+function fromBaseUnits(base, decimals = 18) {
+  const v = BigInt(String(base));
+  const unit = 10n ** BigInt(decimals);
+  const whole = v / unit;
+  const frac = (v % unit).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : `${whole}`;
 }
 
 // ---- one-shot commands (no network needed for help/about text) ------------
@@ -116,7 +125,17 @@ async function cmdDaemon() {
       const amount = toBaseUnits(config.certificatePriceUct);
       const res = await sphere.payments.requests.create(sender, { coinId, amount, memo });
       if (res.success && res.requestId) {
-        pendingCerts.set(res.requestId, { subject, sender, amount });
+        // The DM sender is a transport pubkey; the eventual incoming transfer
+        // reports the payer's CHAIN pubkey. Store the chain pubkey so the two
+        // match. Keep the transport id for delivering follow-up DMs.
+        let chain = sender;
+        try {
+          const peer = await sphere.resolve(sender);
+          if (peer?.chainPubkey) chain = peer.chainPubkey;
+        } catch {
+          /* best effort */
+        }
+        pendingCerts.set(res.requestId, { subject, sender, chain, amount });
       }
       return res;
     },
@@ -143,15 +162,53 @@ async function cmdDaemon() {
   });
 
   // Confirmed incoming payment for a certificate → issue the signed certificate
-  // and refund any overpayment. Never re-send on an uncertain outcome.
+  // and refund any overpayment. We created the request, so the SDK surfaces the
+  // settlement as an incoming transfer (not payment_request:paid, which only
+  // covers requests we RECEIVED). Match the payer to a pending certificate.
   sphere.on('transfer:incoming', async (transfer) => {
-    log('incoming transfer from', transfer.senderPubkey?.slice(0, 12), 'tokens:', transfer.tokens?.length);
-    // Certificate issuance is keyed off the payment request lifecycle below.
-  });
+    const payer = transfer.senderPubkey;
+    let sum = 0n;
+    for (const t of transfer.tokens || []) {
+      if ((!coinId || t.coinId === coinId) && t.amount != null) {
+        try {
+          sum += BigInt(t.amount);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    log('incoming', fromBaseUnits(sum.toString()), 'UCT from', payer?.slice(0, 12));
+    if (sum <= 0n) return;
 
-  sphere.on('payment_request:paid', async (view) => {
-    const meta = pendingCerts.get(view.requestId || view.id);
-    if (!meta) return;
+    // Find this payer's oldest pending certificate request. The payer is a
+    // chain pubkey; match against the resolved chain pubkey we stored.
+    let matchKey = null;
+    let meta = null;
+    for (const [key, m] of pendingCerts) {
+      if (m.chain === payer || m.sender === payer) {
+        matchKey = key;
+        meta = m;
+        break;
+      }
+    }
+
+    if (!meta) {
+      // No certificate awaiting this payer — refund the unexpected payment.
+      log('no pending certificate for payer; refunding');
+      await refundOnce(sphere, { recipient: payer, amountBase: sum.toString(), coinId, memo: 'Frani Signet: no pending certificate' });
+      return;
+    }
+
+    const price = BigInt(meta.amount);
+    if (sum < price) {
+      log('certificate underpaid; refunding');
+      await refundOnce(sphere, { recipient: payer, amountBase: sum.toString(), coinId, memo: 'Refund (underpayment) — certificate' });
+      await sphere.communications
+        .sendDM(payer, `The certificate fee is ${config.certificatePriceUct} UCT but ${fromBaseUnits(sum.toString())} arrived. Refunded — please pay the exact fee.`)
+        .catch(() => {});
+      return;
+    }
+
     try {
       const receipt = createReceipt({
         subject: meta.subject,
@@ -167,9 +224,18 @@ async function cmdDaemon() {
         ['Official Frani Signet certificate:', '', JSON.stringify(receipt)].join('\n'),
       );
       log('certificate issued to', meta.sender.slice(0, 12));
-      pendingCerts.delete(view.requestId || view.id);
+      pendingCerts.delete(matchKey);
     } catch (err) {
       log('certificate issuance error:', err.message);
+      return;
+    }
+
+    // Refund any overpayment.
+    const over = (sum - price).toString();
+    if (BigInt(over) > 0n) {
+      log('overpaid; refunding', fromBaseUnits(over));
+      const r = await refundOnce(sphere, { recipient: payer, amountBase: over, coinId, memo: 'Overpayment refund — certificate' });
+      await sphere.communications.sendDM(payer, `Refunded ${fromBaseUnits(over)} UCT overpayment (${r.status}).`).catch(() => {});
     }
   });
 
